@@ -1,0 +1,82 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: devpulse
+          POSTGRES_PASSWORD: devpulse
+          POSTGRES_DB: devpulse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devpulse -d devpulse_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check app tests
+
+      - name: Format check (ruff)
+        run: ruff format --check app tests
+
+      - name: Type check (mypy)
+        run: mypy app
+        continue-on-error: true # strict typing arrives progressively
+
+      - name: Run unit tests
+        env:
+          ENVIRONMENT: test
+        run: pytest tests -m "not integration"
+
+      - name: Run integration tests (Postgres service)
+        env:
+          ENVIRONMENT: test
+          RUN_INTEGRATION: "1"
+          DATABASE_URL: postgresql+psycopg://devpulse:devpulse@localhost:5432/devpulse_test
+        run: pytest tests -m "integration" --no-cov
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        working-directory: backend
+        run: docker build -t devpulse-backend:ci .

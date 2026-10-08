@@ -1,0 +1,31 @@
+# Render blueprint for the DevPulse backend.
+#
+# Deploy with: `render blueprint deploy` (or import via dashboard).
+# This file is the reproducible source of truth — the same image runs locally
+# via docker-compose.yml, so deploys are a config change, not a port
+# (see ADR-007).
+
+services:
+  - type: web
+    name: devpulse-backend
+    runtime: docker
+    region: singapore
+    plan: free
+    healthCheckPath: /healthz
+    # Render Free sleeps after ~15 min of inactivity; the first request pays a
+    # cold start. The demo is pre-computed so the frontend still loads fast.
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false # set in the dashboard; points at Supabase
+      - key: SECRET_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: ALLOWED_REPOS
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false # the Vercel frontend URL

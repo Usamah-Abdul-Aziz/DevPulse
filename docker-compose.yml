@@ -1,0 +1,63 @@
+# DevPulse — local development compose
+#
+# Brings up Postgres, the backend, and the frontend with one command:
+#     docker compose up --build
+#
+# Free-tier production targets (Vercel / Render / Supabase) are documented in
+# docs/architecture.md §10 and ADR-007; this file is the local parity env.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: devpulse
+      POSTGRES_PASSWORD: devpulse
+      POSTGRES_DB: devpulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - devpulse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devpulse -d devpulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: local
+      DATABASE_URL: postgresql+psycopg://devpulse:devpulse@db:5432/devpulse
+      TEST_DATABASE_URL: postgresql+psycopg://devpulse:devpulse@db:5432/devpulse_test
+      SECRET_KEY: local-dev-only-not-a-secret
+      FRONTEND_ORIGIN: http://localhost:3000
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      ALLOWED_REPOS: ${ALLOWED_REPOS:-}
+    ports:
+      - "8000:8000"
+    # Live reload in local; the image's default CMD is for production.
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      --reload-dir app
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  devpulse_pgdata:

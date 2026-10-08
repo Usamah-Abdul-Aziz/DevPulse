@@ -1,0 +1,42 @@
+name: ml
+
+# The ML pipeline is built from Phase 6 onward. This workflow exists now so the
+# contract is in place: it runs the leakage and label tests as soon as they
+# land, and never runs expensive training on every push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ml/**"
+      - ".github/workflows/ml.yml"
+  pull_request:
+    paths:
+      - "ml/**"
+      - ".github/workflows/ml.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Shared feature package is imported by both ml/ and backend/.
+          pip install -r backend/requirements.txt
+
+      - name: Run ML contract tests
+        run: pytest ml/tests -v
+        continue-on-error: true # no ML tests exist until Phase 6

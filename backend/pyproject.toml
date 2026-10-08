@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devpulse-backend"
+version = "0.1.0"
+description = "DevPulse — software engineering intelligence platform (read API + ingestion)"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+# --- pytest ---------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--cov=app",
+  "--cov-report=term-missing",
+  "--cov-report=html",
+]
+markers = [
+  "integration: tests that need a live database (skipped without DATABASE_URL)",
+]
+# Escalate deprecations in our own code to errors; third-party libraries (anyio,
+# starlette, pydantic) emit deprecation noise from version mismatches we do not
+# control. The generic DeprecationWarning stays at default level.
+filterwarnings = [
+  "error::DeprecationWarning:app.*",
+]
+
+# --- ruff -----------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",   # pycodestyle
+  "F",        # pyflakes
+  "I",        # isort
+  "B",        # bugbear
+  "UP",       # pyupgrade
+  "C4",       # comprehensions
+  "SIM",      # simplify
+  "RUF",      # ruff-specific
+]
+ignore = ["B008"]  # FastAPI's Depends() in defaults is the framework's idiom
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # assert False in tests is fine
+
+# --- mypy -----------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+exclude = ["alembic/versions/"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
