@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
+from app.api.errors import HTTPProblem, http_problem_handler
 from app.api.health import router as health_router
 from app.api.router import api_router
 from app.core.config import settings
@@ -49,6 +50,9 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router)
+
+    # RFC 9457 problem details for every client-facing failure (docs/api.md).
+    app.add_exception_handler(HTTPProblem, http_problem_handler)
 
     # Convenience root alias so `/healthz` works without the version prefix.
     app.include_router(health_router)

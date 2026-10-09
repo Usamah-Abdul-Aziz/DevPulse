@@ -6,12 +6,20 @@
  * identically on Vercel and in Docker.
  */
 
-import type { HealthResponse, ReadinessResponse } from "@/types";
+import type {
+  ConnectResponse,
+  HealthResponse,
+  JobResponse,
+  Page,
+  ReadinessResponse,
+  RepositorySummary,
+} from "@/types";
 
 export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public detail?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -30,7 +38,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new ApiError(response.status, `${response.status} ${response.statusText} — ${path}`);
+    // Errors are RFC 9457 problem documents (docs/api.md); surface `detail`, not a status dump.
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+      title?: string;
+    } | null;
+    throw new ApiError(
+      response.status,
+      body?.detail ?? body?.title ?? `${response.status} ${response.statusText} — ${path}`,
+      body?.detail,
+    );
   }
 
   return response.json() as Promise<T>;
@@ -39,4 +56,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<HealthResponse>("/api/v1/healthz"),
   readiness: () => request<ReadinessResponse>("/api/v1/readyz"),
+  listRepositories: (page = 1, limit = 20) =>
+    request<Page<RepositorySummary>>(
+      `/api/v1/repositories?page=${page}&limit=${limit}`,
+    ),
+  connectRepository: (repository: string) =>
+    request<ConnectResponse>("/api/v1/repositories/connect", {
+      method: "POST",
+      body: JSON.stringify({ repository }),
+    }),
+  getJob: (jobId: number) => request<JobResponse>(`/api/v1/jobs/${jobId}`),
 };

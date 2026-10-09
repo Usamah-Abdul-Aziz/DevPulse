@@ -98,52 +98,118 @@ cannot drift apart.
 
 ## 4. Data model
 
-Initial entities (all repo-scoped tables carry `repository_id`):
+Implemented in Phase 1 + Phase 2 (`backend/app/models/`, one file per entity group; all repo-scoped
+tables carry `repository_id`; timestamps are `DateTime(timezone=True)`):
 
-| Table | Key columns / constraints |
+| Table | Natural key (unique) | Key columns |
+|---|---|---|
+| `repositories` | `(owner, name)` | `default_branch`, `last_synced_at`, `is_demo` |
+| `contributors` | `(repository_id, github_id)` | `login`, `name`, `email`, `is_bot`, `is_ghost` — keyed on the GraphQL node id, not the mutable login ([ADR-010](decisions/ADR-010-contributor-identity-and-ghosts.md)) |
+| `pull_requests` | `(repository_id, number)` | `title`, `state`, `author_id`, `created_at`, `updated_at`, `closed_at`, `merged_at`, `is_draft`, `additions`, `deletions`, `changed_files`, `base_branch`, `head_branch`, `labels` (JSONB), `raw_payload` (JSONB), `truncated_files` |
+| `pull_request_reviews` | `(pull_request_id, github_id)` | `reviewer_id`, `state`, `submitted_at` |
+| `issues` | `(repository_id, number)` | `title`, `state`, `author_id`, `created_at`, `updated_at`, `closed_at`, `labels` (JSONB), `reopened_count` |
+| `file_changes` | `(pull_request_id, path)` | `additions`, `deletions`, `is_generated`; `commit_id` nullable and unfilled in Phase 2 |
+| `commits` | `(repository_id, sha)` | `author_id` (nullable), `author_name`, `author_email`, `committed_at`, `additions`, `deletions`, `is_merge`, `message` |
+| `releases` | `(repository_id, tag)` | `name`, `published_at`, `author_id` |
+| `ingestion_jobs` | id | `repository_id`, `status`, `started_at`, `finished_at`, `cursor` (JSONB), `error`, `counts` (JSONB), `resume_after` |
+
+JSONB columns (`labels`, `raw_payload`, `cursor`, `counts`) use a type decorator that renders JSONB
+on Postgres and plain JSON on SQLite, so the test suite runs against the same schema.
+
+Indexes: `(repository_id, created_at)` on `pull_requests`, `issues`, `commits`;
+`(repository_id, updated_at)` on `pull_requests` and `issues` (the incremental-sync window scan);
+FK indexes on `pull_request_id`.
+
+Deferred until their phase — **not** created in Phase 2: `ci_runs` (Phase 4), `metrics` (Phase 3),
+`pr_features` / `risk_predictions` / `model_versions` (Phases 6–8), `hotspots` / `anomalies`
+(post-MVP). Their planned shape, for reference:
+
+| Table (planned) | Key columns |
 |---|---|
-| `repositories` | `owner`, `name` (unique together), `default_branch`, `last_synced_at`, `is_demo` |
-| `contributors` | `repository_id`, `login`, `is_bot`, merged identities (email/login aliases) |
-| `commits` | `sha` (unique per repo), `author_id`, `committed_at`, `additions`, `deletions`, `is_merge` |
-| `pull_requests` | unique (`repository_id`, `number`); `created_at`, `merged_at`, `closed_at`, `is_draft`, additions, deletions, `changed_files`, `base_branch` |
-| `pull_request_reviews` | `pull_request_id`, `reviewer_id`, `state`, `submitted_at` |
-| `issues` | unique (`repository_id`, `number`); `created_at`, `closed_at`, labels, `reopened_count` |
-| `file_changes` | `pull_request_id` / `commit_id`, `path`, additions, deletions, `is_generated` |
-| `ci_runs` | `repository_id`, `workflow`, `branch`, `conclusion`, `started_at`, `completed_at` |
-| `releases` | `repository_id`, `tag`, `published_at` |
-| `ingestion_jobs` | `repository_id`, `status`, `started_at`, `finished_at`, `cursor`, `error`, counts |
 | `metrics` | `repository_id`, `metric_key`, `window_start`, `window_end`, `value` (p50/p85 stored as separate keys) |
 | `pr_features` | `pull_request_id`, `feature_version`, `as_of` (= PR `created_at`), feature columns / JSONB |
 | `risk_predictions` | `pull_request_id`, `model_version_id`, `score`, `tier`, `shap` (JSONB: feature → signed contribution), `scored_at` |
+| `ci_runs` | `repository_id`, `workflow`, `branch`, `conclusion`, `started_at`, `completed_at` |
 | `hotspots` | `repository_id`, `path`, `score`, `computed_at` |
 | `anomalies` | `repository_id`, `metric_key`, `window`, `expected`, `observed`, `method` |
 | `model_versions` | `name`, `version`, `dataset_version`, `metrics` (JSONB), `artifact_path`, `is_production` |
 
-Also: store the raw GitHub payload (JSONB) for PRs so re-extraction does not require re-fetching;
-add indexes on (`repository_id`, `created_at`) for time-series queries. `users` is deferred with
+Migration/model drift is guarded by `backend/tests/test_migrations.py`, which round-trips
+`alembic upgrade head` → `downgrade base` on a scratch Postgres database. `users` is deferred with
 OAuth ([product.md §4.2](product.md#42-non-goals-for-v1)).
+
+Columns added beyond the blueprint's original list, and why: `github_id` on contributors (identity
+keying), `author_name`/`author_email` on commits (ghost users are unclaimable otherwise),
+`truncated_files` ([ADR-006](decisions/ADR-006-history-depth-cap.md)), `updated_at` (incremental
+sync), `labels` JSONB and `raw_payload` on PRs.
 
 ## 5. Ingestion design
 
-Input: `owner/repository` (public, from an allow-list in v1).
+Input: `owner/repository` (public, from an allow-list in v1). Implemented in
+`backend/app/ingestion/` ([ADR-008](decisions/ADR-008-graphql-ingestion-strategy.md),
+[ADR-009](decisions/ADR-009-ingestion-idempotency-and-resume.md)).
 
-1. **API strategy:** prefer the GraphQL API for PRs + reviews + files in fewer calls; use REST for
-   CI runs and releases. Avoid N+1 requests per PR.
-2. **Rate limits:** read rate-limit headers, back off with jitter, and stop the job cleanly when
-   the budget is exhausted (resume from a stored cursor).
-3. **Incremental sync:** after the first full sync, fetch only items updated since
-   `last_synced_at` (cursor / `since` / ETag).
-4. **Jobs:** `POST /connect` creates an `ingestion_jobs` row and returns immediately; the UI polls
-   job status.
-5. **Size limits:** history depth capped per [ADR-006](decisions/ADR-006-history-depth-cap.md)
-   (24 months; 12 months for very large repos) to stay within free-tier limits.
-6. **Cleaning:** flag bots, mark generated files, merge author identities, handle deleted
-   ("ghost") users.
-7. **Label inputs:** also fetch revert references, issue links (`fixes #n`), and issue labels
-   needed by [`ml.md` §2](ml.md#2-label-definition).
+### Phases (in dependency order)
 
-**Acceptance:** a medium public repository can be ingested end-to-end, re-run idempotently, and
-resumed after a simulated rate-limit stop.
+```text
+repository → pull_requests → issues → commits → releases → done
+```
+
+1. **repository** — `defaultBranchRef.name` and `pullRequests.totalCount`. Above 50 000 PRs the
+   window shrinks from 24 to 12 months and the reduction is recorded on the job
+   ([ADR-006](decisions/ADR-006-history-depth-cap.md)).
+2. **pull_requests** — pages of 100, `orderBy: UPDATED_AT DESC`, with reviews and files nested in
+   the same query (one call per page, not 201). A PR whose file connection exceeds the nested
+   100-item cap gets follow-up queries up to `INGESTION_MAX_FILE_CHANGES_PER_PR` (1000), then
+   `truncated_files = true`. `PENDING` reviews are skipped — requested reviewers, not submitted
+   reviews.
+3. **issues** — pages of 100, same stop rule, plus labels and a `REOPENED_EVENT` timeline count.
+4. **commits** — `ref(qualifiedName: defaultBranch).target.history(first:, since:, until:)`; the
+   window is enforced **server-side** because `Commit.history` is the one connection that takes a
+   time filter. Skipped entirely when the repository has no default branch.
+5. **releases** — REST `/releases`, pages of 100, keeping only rows with `published_at`.
+6. **finalize** — `repositories.last_synced_at = now`, job `succeeded`.
+
+### Incremental sync without `since`
+
+`Repository.pullRequests` and `Repository.issues` accept **no `since` argument** (verified against
+the published schema), so PRs and issues page `UPDATED_AT DESC` and stop paging when the oldest item
+on a page predates `max(window_start, last_synced_at)`. The page that straddles that boundary **is**
+stored — dropping it would lose items updated inside the window. Commits filter server-side. This is
+the subject of [ADR-008](decisions/ADR-008-graphql-ingestion-strategy.md).
+
+### Rate limits, pausing, and resume
+
+The budget is read from `rateLimit { remaining resetAt }` on every GraphQL response and from the
+`x-ratelimit-*` headers on REST. When fewer than `INGESTION_MIN_RATE_BUDGET` points remain the client
+raises *before* hitting zero; the runner sets `status = "paused"` with `resume_after` = GitHub's
+reset time and leaves the cursor in place. The cursor is persisted **after every page**, so resume
+restarts at the next page and a crash costs at most one page.
+
+### Idempotency
+
+Every write is a natural-key upsert (`bulk_upsert`): `INSERT ... ON CONFLICT DO UPDATE` on Postgres,
+and a load-then-merge that preserves row ids on SQLite. Re-ingesting the same pages updates rows in
+place — never duplicates, never resets progress.
+
+### Cleaning (data-ethics invariant 2: flag, never delete)
+
+- **Bots** — `is_bot` from the GraphQL `isBot` field, or from an explicit, auditable login list in
+  `app/ingestion/cleaning.py` (`[bot]` suffix plus `dependabot`, `renovate`, `github-actions`,
+  `pre-commit-ci`, `mergify`, `imgbot`, `greenkeeper`, …).
+- **Generated files** — `is_generated` from an explicit path-rule list (lockfiles, `dist/`, `build/`,
+  `vendor/`, `node_modules/`, `*.min.js`, `*.min.css`, `coverage/`, `*.generated.*`,
+  `__snapshots__/`).
+- **Ghost users** — `author: null` becomes a placeholder contributor with
+  `github_id = "GHOST"` and `is_ghost = true`; commits keep `author_name`/`author_email`, which the
+  git payload preserves after the account is gone
+  ([ADR-010](decisions/ADR-010-contributor-identity-and-ghosts.md)).
+
+### Label inputs (for Phase 6)
+
+`labels` (JSONB) and `raw_payload` are stored on PRs so the label rules in
+[`ml.md` §2](ml.md#2-label-definition) — revert references, `fixes #n` links — can be extracted
+later without a re-fetch.
 
 ## 6. API design
 

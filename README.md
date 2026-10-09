@@ -6,7 +6,8 @@ DevPulse analyzes software-development activity from public GitHub repositories 
 analytics + machine learning to surface project health, delivery risks, and engineering
 bottlenecks — with explanations a tech lead can act on.
 
-> **Status:** Phase 0 (product definition) complete · Phases 1–8 = MVP · in development
+> **Status:** Phase 0 (product definition) · Phase 2 (GitHub ingestion) complete · Phases 1–8 = MVP
+> · in development
 
 ---
 

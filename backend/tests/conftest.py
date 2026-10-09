@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import get_settings, settings
 from app.core.database import get_db
 from app.main import create_app
-from app.models.base import Base
+from app.models import Base
 
 
 def _integration_enabled() -> bool:
@@ -82,6 +82,23 @@ def db_session(engine: Engine) -> Iterator[Session]:
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tables(db_session: Session) -> Iterator[None]:
+    """Wipe every table after each test.
+
+    The engine is session-scoped (in-memory SQLite shares one connection across tests), so without
+    this, rows from one test would satisfy another test's unique constraints and its `count()`
+    expectations. Children are deleted before parents.
+    """
+    yield
+    # Roll back first: a test may leave a dirty ORM object in the identity map, and deleting its
+    # row underneath it makes the following flush raise `StaleDataError`.
+    db_session.rollback()
+    for model in reversed(Base.metadata.sorted_tables):
+        db_session.execute(model.delete())
+    db_session.commit()
 
 
 @pytest.fixture(autouse=True)

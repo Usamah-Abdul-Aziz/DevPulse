@@ -33,6 +33,20 @@ class Settings(BaseSettings):
 
     # --- GitHub -----------------------------------------------------------
     github_token: str | None = Field(default=None)
+    github_api_url: str = Field(default="https://api.github.com")
+    github_graphql_url: str = Field(default="https://api.github.com/graphql")
+
+    # --- Ingestion --------------------------------------------------------
+    #: History depth per ADR-006 (24 months; reduced to 12 for very large repos).
+    ingestion_history_months: int = Field(default=24, ge=1, le=60)
+    #: GraphQL `first` / REST `per_page`. 100 is GitHub's max page size.
+    ingestion_page_size: int = Field(default=100, ge=1, le=100)
+    #: Pause the job when fewer than this many rate-limit points remain, so we stop
+    #: *before* hitting the wall instead of mid-page.
+    ingestion_min_rate_budget: int = Field(default=200, ge=1)
+    #: File-change rows stored per PR before truncation (ADR-006).
+    ingestion_max_file_changes_per_pr: int = Field(default=1000, ge=1)
+    ingestion_request_timeout: float = Field(default=30.0, ge=1.0)
 
     # --- App --------------------------------------------------------------
     secret_key: str = Field(default="change-me")
